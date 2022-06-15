@@ -11,67 +11,57 @@ dbutils.widgets.text(CLEANUP_TTL_KEY, CLEANUP_TTL_DEFAULT, "Max time in days a r
 CLEANUP_TTL_VAL = dbutils.widgets.get(CLEANUP_TTL_KEY)
 STREAMING_LOG_TABLES = ["action_stream", "transition_stream", "traveler_stream"]
 
+MAX_OFFSET_PER_PARTITION_QUERY = """
+SELECT group_by_data.topic, group_by_data.partition, group_by_data.max_offset, outer_data.data, outer_data.timestamp, outer_data.processingTimestamp
+FROM streaming_logs.[STREAM_TABLE] outer_data
+INNER JOIN (SELECT topic, partition, MAX(offset) AS max_offset FROM streaming_logs.[STREAM_TABLE]
+GROUP BY topic, partition) group_by_data
+ON outer_data.offset = group_by_data.max_offset"""
+STREAM_TABLE_KEY = "[STREAM_TABLE]"
+
 # COMMAND ----------
 
-def load_table(table_name):
-  return spark.table(table_name)
-
-def filter_old_rows(df, cutoff_timestamp):
-  return df.filter(f"processingTimestamp > '{cutoff_timestamp}'")
+def filter_old_rows(table_name, cutoff_timestamp):
+    return spark.sql(f"SELECT * FROM streaming_logs.{table_name} WHERE processingTimestamp > '{cutoff_timestamp}'")
 
 def overwrite_streaming_log_table(df, streaming_log_table):
-  df.write.saveAsTable(streaming_log_table, mode="overwrite")
+    df.write.saveAsTable(streaming_log_table, mode="overwrite")
 
 def validate_ttl(ttl):
-  try:
-    return int(ttl)
-  except Exception as ex:
-    print("Unable to parse provided TTL")
-    raise ex
+    try:
+        return int(ttl)
+    except Exception as ex:
+        print(f"Unable to parse provided TTL: {ttl}")
+        raise ex
 
 # We want to ensure there is always at least one entry in the table. If all entries are older than the TTL, we pick the latest entry to keep
-def ensure_one_entry(og_df, filtered_df):
-  row = og_df.orderBy(F.col("processingTimestamp").desc()).first() 
-  spark.createDataFrame([row], filtered_df.schema).show()
-  if filtered_df.count() > 0:
-    return filtered_df
-  return spark.createDataFrame([row], filtered_df.schema)
-        
+def ensure_one_entry(table_name, filtered_df):
+    if filtered_df.count() > 0:
+        return filtered_df
+    query = MAX_OFFSET_PER_PARTITION_QUERY.replace(STREAM_TABLE_KEY, table_name)
+    return spark.sql(query)
     
 parsed_ttl = validate_ttl(CLEANUP_TTL_VAL)
 current_time_epoc_secs = time.time()
 time_diff = parsed_ttl * 24 * 60 * 60 #TTL days in milliseconds
 cutoff_time_epoc_secs = current_time_epoc_secs - time_diff
 cutoff_timestamp = datetime.datetime.fromtimestamp(cutoff_time_epoc_secs)
-print(current_time_epoc_secs, time_diff, cutoff_time_epoc_secs)
 
 for streaming_log_table in STREAMING_LOG_TABLES:
-  try:
-    print(f"Performing cleanup on table {streaming_log_table} of all entries older than {cutoff_timestamp}")
-    df = load_table(f"streaming_logs.{streaming_log_table}")
-    df.show()
-    filtered_df = filter_old_rows(df, cutoff_timestamp)
-    
-    filtered_df = ensure_one_entry(df, filtered_df)
-    filtered_df.orderBy(F.col("processingTimestamp").asc()).show()
-    overwrite_streaming_log_table(filtered_df, streaming_log_table)
-    print(f"Successfully cleaned up table {streaming_log_table} of all entries older than {cutoff_timestamp}")
-  except Exception as ex:
-    print(f"Encountered exception processing table {streaming_log_table}")
-    raise ex
+    try:
+        print(f"Performing cleanup on table {streaming_log_table} of all entries older than {cutoff_timestamp}")
+        filtered_df = filter_old_rows(streaming_log_table, cutoff_timestamp)
+        
+        filtered_df = ensure_one_entry(streaming_log_table, filtered_df)
+        print(f"Filtered data for table {streaming_log_table}")
+        filtered_df.show()
+        
+        overwrite_streaming_log_table(filtered_df, streaming_log_table)
+        print(f"Successfully cleaned up table {streaming_log_table} of all entries older than {cutoff_timestamp}")
+    except Exception as ex:
+        print(f"Encountered exception processing table {streaming_log_table}")
+        raise ex
 
-
-# COMMAND ----------
-
-
-
-# COMMAND ----------
-
-for table in STREAMING_LOG_TABLES:
-    df = spark.table(f"streaming_logs.{table}")
-    new_table_name = table + "temp_3"
-    print(new_table_name)
-    df.write.saveAsTable(new_table_name)
 
 # COMMAND ----------
 
