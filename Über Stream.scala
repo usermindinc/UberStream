@@ -171,22 +171,22 @@ def addColumnToTable(orgId:Long, table:String, column:String, columnType:String)
   """)
 }
 
-def addDateColumnToTable(table: String, columnNameToCheck: String) : Unit = {
+def addDateColumnToTable(table: String, dateCol: String) : Unit = {
   val df = spark.sql(f"SELECT * FROM streaming_logs.$table%s")
-  if (df.columns.contains(columnNameToCheck)) {
-    println(f"$columnNameToCheck%s column found in table streaming_logs.$table%s")
+  if (df.columns.contains(dateCol)) {
+    println(f"$dateCol%s column found in table streaming_logs.$table%s")
     return
   } else {
-    println(f"$columnNameToCheck%s column not found in table streaming_logs.$table%s. Saving current table to streaming_logs.$table%s_backup before adding $columnNameToCheck%s")
+    println(f"$dateCol%s column not found in table streaming_logs.$table%s. Saving current table to streaming_logs.$table%s_backup before adding $dateCol%s")
     df
       .write
       .mode("overwrite")
       .saveAsTable(f"streaming_logs.$table%s_backup")
       
     df
-      .withColumn(columnNameToCheck, to_date(col("processingTimestamp"),"yyyy-MM-dd"))
+      .withColumn(dateCol, to_date(col("processingTimestamp"),"yyyy-MM-dd"))
       .write
-      .partitionBy(columnNameToCheck)
+      .partitionBy(dateCol)
       .mode("overwrite")
       .option("overwriteSchema", "true")
       .saveAsTable(s"streaming_logs.$table")
@@ -216,9 +216,6 @@ dbCreate(logDatabase)
 addDateColumnToTable("action_stream", "processingDate")
 addNewColumnsToActionLogTable("action_stream")
 val actionOffsets = getOffsets(actionTopic, logDatabase + "." + actionLogTable)
-println(actionLogTable)
-//val actionOffsets2 = "{\"insights-actions\":{\"0\":680424},\"action-status\":{\"0\":3306373}}"
-val kafkaBootstrapServers2 = "kafka-broker-0-preprod.preprod.usermind.com:9092,kafka-broker-1-preprod.preprod.usermind.com:9092,kafka-broker-2-preprod.preprod.usermind.com:9092"
 val actionDF = extractActionKafkaStream(loadKafkaStream(kafkaBootstrapServers, actionTopic, actionOffsets))
 val actionStream = startActionStream(actionDF)
 
