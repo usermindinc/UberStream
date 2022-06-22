@@ -67,11 +67,10 @@ parsed_ttl = validate_ttl(CLEANUP_TTL_VAL)
 current_time_epoc_secs = time.time()
 time_diff = parsed_ttl * 24 * 60 * 60 #TTL days in milliseconds
 cutoff_time_epoc_secs = current_time_epoc_secs - time_diff
-cutoff_timestamp = "2022-06-15T21:10:04"#datetime.datetime.fromtimestamp(cutoff_time_epoc_secs)
+cutoff_timestamp = datetime.datetime.fromtimestamp(cutoff_time_epoc_secs)
 
 for streaming_log_table in STREAMING_LOG_TABLES:
     try:
-        streaming_log_table += "_newestt"
         
         print(f"Performing cleanup on table {streaming_log_table} of all entries older than {cutoff_timestamp}")
         result = ensure_one_entry(streaming_log_table, cutoff_timestamp)
