@@ -177,27 +177,15 @@ def addDateColumnToTable(table: String, dateCol: String) : Unit = {
     println(f"$dateCol%s column found in table streaming_logs.$table%s")
     return
   } else {
-    println(f"$dateCol%s column not found in table streaming_logs.$table%s. Saving current table to streaming_logs.$table%s_backup before adding $dateCol%s")
-    val df = spark.sql(f"SELECT * FROM streaming_logs.$table%s")
-    df
-      .write
-      .mode("overwrite")
-      .saveAsTable(f"streaming_logs.$table%s_backup")
-      
-    df
-      .withColumn(dateCol, to_date(col("processingTimestamp"),"yyyy-MM-dd"))
-      .write
-      .partitionBy(dateCol)
-      .mode("overwrite")
-      .option("overwriteSchema", "true")
-      .saveAsTable(s"streaming_logs.$table")
+    println(f"$dateCol%s column not found in table streaming_logs.$table%s. Saving current table to streaming_logs.$table%s_backup")
+    //Create backup table
+    spark.sql(f"CREATE TABLE streaming_logs.$table%s_backup AS SELECT * FROM streaming_logs.$table%s")
+    println(f"Finished creating streaming_logs.$table%s_backup, now overwriting streaming_logs.$table%s")
+    //Overwrite original table with processingDate and partitioned by processingDate
+    spark.sql(f"REPLACE TABLE streaming_logs.$table%s PARTITIONED BY (processingDate) AS SELECT *, CAST(processingTimestamp AS DATE) AS processingDate FROM streaming_logs.$table%s")  
   }
 }
 
-
-// COMMAND ----------
-
-addDateColumnToTable("transition_stream_temp_backup", "processingDate")
 
 // COMMAND ----------
 
