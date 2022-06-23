@@ -172,12 +172,13 @@ def addColumnToTable(orgId:Long, table:String, column:String, columnType:String)
 }
 
 def addDateColumnToTable(table: String, dateCol: String) : Unit = {
-  val df = spark.sql(f"SELECT * FROM streaming_logs.$table%s")
-  if (df.columns.contains(dateCol)) {
+  val dateColPresent = spark.sql(f"SHOW COLUMNS IN streaming_logs.$table%s").where(f"col_name = '$dateCol%s'")
+  if (dateColPresent.count() > 0) {
     println(f"$dateCol%s column found in table streaming_logs.$table%s")
     return
   } else {
     println(f"$dateCol%s column not found in table streaming_logs.$table%s. Saving current table to streaming_logs.$table%s_backup before adding $dateCol%s")
+    val df = spark.sql(f"SELECT * FROM streaming_logs.$table%s")
     df
       .write
       .mode("overwrite")
@@ -193,6 +194,10 @@ def addDateColumnToTable(table: String, dateCol: String) : Unit = {
   }
 }
 
+
+// COMMAND ----------
+
+addDateColumnToTable("transition_stream_temp_backup", "processingDate")
 
 // COMMAND ----------
 
