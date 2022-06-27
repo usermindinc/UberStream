@@ -182,7 +182,7 @@ def addDateColumnToTable(table: String, dateCol: String) : Unit = {
     spark.sql(f"CREATE TABLE streaming_logs.$table%s_backup AS SELECT * FROM streaming_logs.$table%s")
     println(f"Finished creating streaming_logs.$table%s_backup, now overwriting streaming_logs.$table%s")
     //Overwrite original table with processingDate and partitioned by processingDate
-    spark.sql(f"REPLACE TABLE streaming_logs.$table%s PARTITIONED BY (processingDate) AS SELECT *, CAST(processingTimestamp AS DATE) AS processingDate FROM streaming_logs.$table%s")  
+    spark.sql(f"REPLACE TABLE streaming_logs.$table%s PARTITIONED BY (processingDate) AS SELECT *, CAST(processingTimestamp AS DATE) AS processingDate FROM streaming_logs.$table%s_backup")  
   }
 }
 
