@@ -115,8 +115,12 @@ def convertStringToTimestamp(df:DataFrame, dateColumn:String) : DataFrame = {
 }
 
 def getLatestOffsets(topicName:String, tableName:String) : String = {
-  spark.sql(s"SELECT partition, max(offset) offset FROM $tableName WHERE topic='$topicName' GROUP BY partition ORDER BY partition")
-  .collect()
+  val collectedRows = spark.sql(s"SELECT partition, max(offset) offset FROM $tableName WHERE topic='$topicName' GROUP BY partition ORDER BY partition").collect()
+  if (collectedRows.size == 0) {
+    println("No partitions found in table, starting from earliest.")
+    throw new Exception("No partitions found in table, starting from earliest.")
+  }
+  return collectedRows
   .map(row => "\""+row.getInt(0).toString+"\":"+row.getLong(1).toString)
   .toList
   .mkString(",")
@@ -185,7 +189,6 @@ def addDateColumnToTable(table: String, dateCol: String) : Unit = {
     spark.sql(f"REPLACE TABLE streaming_logs.$table%s PARTITIONED BY (processingDate) AS SELECT *, CAST(processingTimestamp AS DATE) AS processingDate FROM streaming_logs.$table%s_backup")  
   }
 }
-
 
 // COMMAND ----------
 
