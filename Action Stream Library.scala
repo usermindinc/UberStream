@@ -161,9 +161,12 @@ def startActionStream(dfStream : DataFrame) : StreamingQuery = {
     .writeStream
     .foreachBatch ( (df: DataFrame, batchId: Long) => {
       //augment stream data and create a view for logging
-      df.withColumn("batchId", lit(batchId)).withColumn("processingTimestamp", lit(current_timestamp())).createOrReplaceTempView("actionStreamContent")
+      val current_time = current_timestamp()
       
-      //format stream to just contain action data
+      df.withColumn("batchId", lit(batchId))
+          .withColumn("processingTimestamp", lit(current_time))
+          .withColumn("processingDate", to_date(lit(current_time),"yyyy-MM-dd"))
+          .createOrReplaceTempView("actionStreamContent")
       val dfFormatted = formatActionStream(df)
       val dfFormattedWithSessionId = moveObjectIdToSessionId(dfFormatted)
       dfFormattedWithSessionId.createOrReplaceTempView("actionUpdates")
@@ -405,7 +408,7 @@ def startActionStream(dfStream : DataFrame) : StreamingQuery = {
            })      
         })
         if(!tableExists(logDatabase + "." + actionLogTable)){
-            df.sparkSession.sql(s"""CREATE TABLE $logDatabase.$actionLogTable AS SELECT * FROM actionStreamContent""")    
+            df.sparkSession.sql(s"""CREATE TABLE $logDatabase.$actionLogTable PARTITIONED BY (processingDate) AS SELECT * FROM actionStreamContent""")    
         } else {
             df.sparkSession.sql(s"""INSERT INTO $logDatabase.$actionLogTable SELECT * FROM actionStreamContent""")         
         }

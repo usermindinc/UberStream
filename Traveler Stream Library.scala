@@ -98,7 +98,12 @@ def startTravelerStream(dfStream : DataFrame) : StreamingQuery = {
     .writeStream
     .foreachBatch ( (df: DataFrame, batchId: Long) => {
       //augment stream data and create a view for logging
-      df.withColumn("batchId", lit(batchId)).withColumn("processingTimestamp", lit(current_timestamp())).createOrReplaceTempView("travelerStreamContent")
+       val current_time = current_timestamp()
+      
+      df.withColumn("batchId", lit(batchId))
+          .withColumn("processingTimestamp", lit(current_time))
+          .withColumn("processingDate", to_date(lit(current_time),"yyyy-MM-dd"))
+          .createOrReplaceTempView("travelerStreamContent")
       
       //format stream to just contain traveleevent data
       val dfFormatted = formatTravelerStream(df)
@@ -151,7 +156,7 @@ def startTravelerStream(dfStream : DataFrame) : StreamingQuery = {
         })
         //commit processed records so we can resume later
         if(!tableExists(logDatabase + "." + travelerLogTable)){
-            df.sparkSession.sql(s"""CREATE TABLE $logDatabase.$travelerLogTable AS SELECT * FROM travelerStreamContent""")    
+            df.sparkSession.sql(s"""CREATE TABLE $logDatabase.$travelerLogTable PARTITIONED BY (processingDate) AS SELECT * FROM travelerStreamContent""")    
         } else {
             df.sparkSession.sql(s"""INSERT INTO $logDatabase.$travelerLogTable SELECT * FROM travelerStreamContent""")         
         }

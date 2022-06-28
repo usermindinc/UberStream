@@ -146,7 +146,12 @@ def startTransitionStream(dfStream : DataFrame) : StreamingQuery = {
     .writeStream
     .foreachBatch ( (df: DataFrame, batchId: Long) => {
       //augment stream data and create a view for logging
-      df.withColumn("batchId", lit(batchId)).withColumn("processingTimestamp", lit(current_timestamp())).createOrReplaceTempView("transitionStreamContent")
+      val current_time = current_timestamp()
+      
+      df.withColumn("batchId", lit(batchId))
+          .withColumn("processingTimestamp", lit(current_time))
+          .withColumn("processingDate", to_date(lit(current_time),"yyyy-MM-dd"))
+          .createOrReplaceTempView("transitionStreamContent")
       
       //format stream to just contain transition data
       val dfFormatted = formatTransitionStream(df)
@@ -198,7 +203,7 @@ def startTransitionStream(dfStream : DataFrame) : StreamingQuery = {
             }          
         })
       if(!tableExists(logDatabase + "." + transitionLogTable)){
-            df.sparkSession.sql(s"""CREATE TABLE $logDatabase.$transitionLogTable AS SELECT * FROM transitionStreamContent""")    
+            df.sparkSession.sql(s"""CREATE TABLE $logDatabase.$transitionLogTable PARTITIONED BY (processingDate) AS SELECT * FROM transitionStreamContent""")    
         } else {
             df.sparkSession.sql(s"""INSERT INTO $logDatabase.$transitionLogTable SELECT * FROM transitionStreamContent""")         
         }
