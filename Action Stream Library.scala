@@ -167,8 +167,6 @@ def startActionStream(dfStream : DataFrame) : StreamingQuery = {
           .withColumn("processingTimestamp", lit(current_time))
           .withColumn("processingDate", to_date(lit(current_time),"yyyy-MM-dd"))
           .createOrReplaceTempView("actionStreamContent")
-      
-      //format stream to just contain action data
       val dfFormatted = formatActionStream(df)
       val dfFormattedWithSessionId = moveObjectIdToSessionId(dfFormatted)
       dfFormattedWithSessionId.createOrReplaceTempView("actionUpdates")
