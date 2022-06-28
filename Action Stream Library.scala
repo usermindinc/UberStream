@@ -147,9 +147,18 @@ def moveObjectIdToSessionId(df: DataFrame) : DataFrame = {
   return newDf
 }
 
-def addNewColumnsToTransitionLogTable(table: String): Unit = {
-  spark.sql(s"ALTER TABLE streaming_logs.$table ADD COLUMNS (data.sessionId String AFTER objectId);")
-  spark.sql(s"ALTER TABLE streaming_logs.$table ADD COLUMNS (data.values.milestoneId String AFTER travelerStatus);")
+def addNewColumnsToActionLogTable(table: String): Unit = {
+  val sessionIdCommand = s"ALTER TABLE streaming_logs.$table ADD COLUMNS (data.sessionId String AFTER objectId);"
+  val dataCommand = s"ALTER TABLE streaming_logs.$table ADD COLUMNS (data.values.milestoneId String AFTER travelerStatus);"
+  val commandList: List[String] = List(sessionIdCommand, dataCommand)
+  for (command <- commandList) {
+    try {
+      spark.sql(command)
+    } catch {
+      case ex: AnalysisException => println("New columns already present in table: " + ex)
+      case ex: Throwable => throw ex
+    }
+  }
 }
 
 // COMMAND ----------
