@@ -47,11 +47,12 @@ parsed_ttl = validate_ttl(CLEANUP_TTL_VAL)
 from datetime import date, timedelta
  
 today_date = date.today()
-diff = datetime.timedelta(parsed_ttl)
+diff = timedelta(parsed_ttl)
 cutoff_date = today_date - diff
 for streaming_log_table in STREAMING_LOG_TABLES:
     try:
         print(f"Performing cleanup on table {streaming_log_table} of all entries older than {cutoff_date}")
+        time.sleep(15)
         execute_delete_query(streaming_log_table, cutoff_date)
     except Exception as ex:
         print(f"Encountered exception processing table {streaming_log_table}")
