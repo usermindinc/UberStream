@@ -222,9 +222,7 @@ addDateColumnToTable("transition_stream", "processingDate")
 addNewColumnsToTransitionLogTable("transition_stream")
 val transitionOffsets = getOffsets(transitionTopic, logDatabase + "." + transitionLogTable)
 println(transitionOffsets)
-val offsets2 = "{\"insights-transitions\":{\"0\":5668000}}"
-val kafkaBootstrapServers2 = "kafka-broker-0-preprod.preprod.usermind.com:9092,kafka-broker-1-preprod.preprod.usermind.com:9092,kafka-broker-2-preprod.preprod.usermind.com:9092"
-val transitionDF = extractTransitionKafkaStream(loadKafkaStream(kafkaBootstrapServers2, transitionTopic, offsets2))
+val transitionDF = extractTransitionKafkaStream(loadKafkaStream(kafkaBootstrapServers, transitionTopic, transitionOffsets))
 val transitionStream = startTransitionStream(transitionDF)
 
 // COMMAND ----------

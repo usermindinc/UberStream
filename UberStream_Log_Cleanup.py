@@ -44,10 +44,10 @@ def validate_ttl(ttl):
 # We want to ensure there is always at least one entry in the table. If all entries are older than the TTL, we pick the latest entry to keep
     
 parsed_ttl = validate_ttl(CLEANUP_TTL_VAL)
-from datetime import date, timedelta
+
  
 today_date = date.today()
-diff = datetime.timedelta(parsed_ttl)
+diff = timedelta(parsed_ttl)
 cutoff_date = today_date - diff
 for streaming_log_table in STREAMING_LOG_TABLES:
     try:
