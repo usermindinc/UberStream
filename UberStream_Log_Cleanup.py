@@ -44,7 +44,7 @@ def validate_ttl(ttl):
 # We want to ensure there is always at least one entry in the table. If all entries are older than the TTL, we pick the latest entry to keep
     
 parsed_ttl = validate_ttl(CLEANUP_TTL_VAL)
-
+from datetime import date, timedelta
  
 today_date = date.today()
 diff = timedelta(parsed_ttl)
@@ -52,6 +52,7 @@ cutoff_date = today_date - diff
 for streaming_log_table in STREAMING_LOG_TABLES:
     try:
         print(f"Performing cleanup on table {streaming_log_table} of all entries older than {cutoff_date}")
+        time.sleep(15)
         execute_delete_query(streaming_log_table, cutoff_date)
     except Exception as ex:
         print(f"Encountered exception processing table {streaming_log_table}")
