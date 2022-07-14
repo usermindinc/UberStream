@@ -25,7 +25,7 @@ import org.apache.spark.sql.streaming._
 
 // Read both streams at once and merge them together
 val actionTopic = "insights-actions,action-status"
-val actionLogTable = "action_stream_temp"
+val actionLogTable = "action_stream"
 
 // COMMAND ----------
 
