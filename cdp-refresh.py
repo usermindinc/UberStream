@@ -10,10 +10,15 @@ from pyspark.sql import DataFrame
 from pyspark.rdd import RDD
 import time
 import psycopg2
+import datetime
+from datetime import timedelta
+from pyspark.sql.functions import expr
+from pyspark.sql.utils import AnalysisException
+from py4j.protocol import Py4JJavaError
 
 # COMMAND ----------
 
-umcnc.table_updates_parquet#All postgres access functions here.
+#All postgres access functions here.
 
 thylacine_aurora_username = dbutils.secrets.get(scope = "thylacine-aurora", key = "username")
 thylacine_aurora_password = dbutils.secrets.get(scope = "thylacine-aurora", key = "password")
@@ -94,22 +99,80 @@ def fix_spark_sql_missing_columns(org_id, entity_name):
   except:
     print('table org_%s.%s does not have a parquet file' % (org_id, entity_name))
 
-def refresh_data(row): 
-  schema_name = row.schema_name
-  org_id = schema_name[4:]
-  table_name = row.table_name
+def is_table_databricks_managed(schema, table, create_table_query):
   try:
-    start_time = get_time()
-    fix_spark_sql_missing_columns(org_id, table_name)
-    sqlContext.sql("REFRESH TABLE `" + schema_name + "`.`" + table_name + "`")
-    return (get_time() - start_time)
-  except Exception as ex: 
-    print(ex)
-    start_time = get_time()
-    sqlContext.sql("CREATE DATABASE IF NOT EXISTS `" + schema_name + "`")
-    print(row.create_table_query)
-    sqlContext.sql(row.create_table_query)
-    return (get_time() - start_time)
+    if spark.sql(f"DESCRIBE TABLE EXTENDED {schema}.{table}").where("col_name = 'Type' AND data_type = 'MANAGED'").count() > 0:
+      print(f"Table {schema}.{table} is databricks managed")
+      return True
+    print(f"Table {schema}.{table} is NOT databricks managed")
+  except AnalysisException as Ex:
+    print(f"Table {schema}.{table} not found, creating table now")
+    spark.sql(create_table_query)
+    return True
+  
+# We are no longer using the parquet location for the table so we want the query up to the USING keyword and then add um_creation_date and um_processed_timestamp columns  
+def format_create_table_query(create_table_query):
+  unclosed_query = create_table_query.split(")  USING")[0]
+  unclosed_query += ", `um_processed_date` DATE, `um_processed_timestamp` TIMESTAMP"
+  closed_query = unclosed_query + ")"
+  print(closed_query)
+  return closed_query
+    
+def replace_table_with_databricks_managed_table(schema, table, current_time):
+  table_df = spark.table(f"{schema}.{table}") 
+  spark.sql(f"CREATE TABLE {schema}.{table}_backup AS SELECT * FROM {schema}.{table}")
+  print(f"Finished creating {schema}.{table}_backup, now overwriting {schema}.{table}")
+  #Overwrite original table with processingDate and partitioned by processingDate
+  print(f"Dropping original non-databricks managed table {schema}.{table}")
+  spark.sql(f"DROP TABLE {schema}.{table}")
+  print(f"Recreating databricks managed table from {schema}.{table}_backup")
+  spark.sql(f"CREATE OR REPLACE TABLE {schema}.{table}_test1 PARTITIONED BY (um_processed_date) AS SELECT *, CAST('{current_time}' AS DATE) \
+            AS um_processed_date, '{current_time} AS um_processed_timestamp' FROM {schema}.{table}_backup")  
+
+def get_max_um_processed_timestamp(org_id, entity_table):
+  return spark.sql(f"""SELECT MAX(um_processed_timestamp) AS processed_timestamp FROM {org_id}.{entity_table}
+      WHERE um_processed_date = '(SELECT MAX(um_processed_date) FROM {org_id}.{entity_table})'""").collect()[0]["processed_timestamp"]
+
+def file_newer_than_last_processed(schema_name, table_name, last_processed):
+  entity_id = table_name.split("_")[-1]
+  path = f"{parquet_path}/{schema_name}/{entity_id}"
+  if last_processed is None:
+    last_processed_epoc = 1658102400011
+  else:
+    last_processed_epoc = last_processed.timestamp() * 1000
+  URI = sc._gateway.jvm.java.net.URI
+  Path = sc._gateway.jvm.org.apache.hadoop.fs.Path
+  FileSystem = sc._gateway.jvm.org.apache.hadoop.fs.FileSystem
+  conf = sc._jsc.hadoopConfiguration()
+  pathObject = Path(path)
+  fs = pathObject.getFileSystem(sc._jsc.hadoopConfiguration())
+  try:
+    inodes = fs.listStatus(pathObject)
+    time = inodes[0].getModificationTime()
+    file = inodes[0].getPath().toString()
+    files = []
+    for i in range(0, len(inodes)):
+      if (inodes[i].getModificationTime() > last_processed_epoc):
+        time = inodes[i].getModificationTime()
+        files += [inodes[i].getPath().toString()]
+    return files
+  except Py4JJavaError as ex:
+    print(f"Unable to process {schema_name}.{table_name}")
+    return []
+
+def read_newer_files(newer_file_list):
+  if len(newer_file_list) > 0:
+    return spark.read.parquet(*newer_file_list)
+  print("Newer file list was empty, returning None")
+  return None
+
+
+def append_newer_file_dataframe(newer_data, org_id, entity_table):
+  if newer_data:
+    newer_data.write.mode("append").saveAsTable(f"org_{org_id}.{entity_table}_test1")
+  else:
+    print("Dataframe passed to append_newer_file_dataframe with {org_id}.{entity_table} was None, not appending data")
+
 
 # COMMAND ----------
 
@@ -130,9 +193,19 @@ if data_count > 0:
   # refresh tables
   data.show()
   pending_refreshes = data.rdd.collect()
-  refresh_results = list(map(refresh_data, pending_refreshes))
-  print(refresh_results)
-  print("average refresh time: " + str(sum(refresh_results) / data_count))
+  for table_row in pending_refreshes:
+    print(table_row)
+    table_dict = table_row.asDict()
+    schema_name = table_dict["schema_name"]
+    table_name = table_dict["table_name"]
+    if not is_table_databricks_managed(schema_name, table_name, format_create_table_query(table_dict["create_table_query"])):
+      replace_table_with_databricks_managed_table(schema_name, table_name)
+    latest_processed_time = get_max_um_processed_timestamp(schema_name, table_name)
+    print(f"Latest processed time for {schema_name}.{table_name} is {latest_processed_time}")
+    new_files = file_newer_than_last_processed(schema_name, table_name, latest_processed_time)
+    print(f"Found the following files to append to {schema_name}.{table_name}: {new_files}")
+    append_newer_file_dataframe(read_newer_files(new_files), schema_name, table_name)
 
-  # delete all refreshed tables
-  delete_from_update_table(max_id)
+# COMMAND ----------
+
+
