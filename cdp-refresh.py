@@ -60,31 +60,24 @@ def select_from_update_table():
 
 get_time = lambda: int(round(time.time() * 1000))
 
-def get_newest_file(path):
-  URI = sc._gateway.jvm.java.net.URI
-  Path = sc._gateway.jvm.org.apache.hadoop.fs.Path
-  FileSystem = sc._gateway.jvm.org.apache.hadoop.fs.FileSystem
-  conf = sc._jsc.hadoopConfiguration()
-  pathObject = Path(path)
-  fs = pathObject.getFileSystem(sc._jsc.hadoopConfiguration())
+def get_newest_file(org_id, entity_table):
+  file_path_list = []
+  file_info_list = dbutils.fs.ls(f"/mnt/cdp/{org_id}/{entity_table}")
+  most_recent_time = 1658188800011 #Epoc start
+  most_recent_file = ""
+  for file_info in file_info_list:
+    if file_info[2] > most_recent_time:
+      most_recent_file = file_info[0]
+      most_recent_time = file_info[2]
+  return most_recent_file.replace("dbfs:/mnt/cdp/", "s3://usermind-preprod-cdp/")
 
-  inodes = fs.listStatus(pathObject)
-  time = inodes[0].getModificationTime()
-  file = inodes[0].getPath().toString()
-
-  for i in range(1, len(inodes)):
-    if (inodes[i].getModificationTime() > time):
-      time = inodes[i].getModificationTime()
-      file = inodes[i].getPath().toString()
-  return file
-
-def fix_spark_sql_missing_columns(org_id, entity_name):
-  entity_id = entity_name.split('_')[-1]
+def fix_spark_sql_missing_columns(org_id, entity_table):
+  entity_id = entity_table.split('_')[-1]
   path = '%s/%s/%s' % (parquet_path, org_id, entity_id)
-  table_name = 'org_%s.%s' % (org_id, entity_name)
+  table_name = 'org_%s.%s' % (org_id, entity_table)
   stable = spark.table(table_name)
   try:
-    ptable = spark.read.parquet(get_newest_file(path))
+    ptable = spark.read.parquet(get_newest_file(org_id, entity_id))
     map_new = { field.name : field for field in ptable.schema }
     map_old = { field.name : field for field in stable.schema }
     new_fields = { k : map_new[k] for k in set(map_new) - set(map_old) }
@@ -99,80 +92,69 @@ def fix_spark_sql_missing_columns(org_id, entity_name):
   except:
     print('table org_%s.%s does not have a parquet file' % (org_id, entity_name))
 
-def is_table_databricks_managed(schema, table, create_table_query):
+def is_table_databricks_managed(org_id, entity_table, create_table_query):
   try:
-    if spark.sql(f"DESCRIBE TABLE EXTENDED {schema}.{table}").where("col_name = 'Type' AND data_type = 'MANAGED'").count() > 0:
-      print(f"Table {schema}.{table} is databricks managed")
+    if spark.sql(f"DESCRIBE TABLE EXTENDED {org_id}.{entity_table}").where("col_name = 'Type' AND data_type = 'MANAGED'").count() > 0:
+      print(f"Table {org_id}.{entity_table} is databricks managed")
       return True
-    print(f"Table {schema}.{table} is NOT databricks managed")
+    print(f"Table {org_id}.{entity_table} is NOT databricks managed")
   except AnalysisException as Ex:
-    print(f"Table {schema}.{table} not found, creating table now")
+    print(f"Table {org_id}.{entity_table} not found, creating table now")
     spark.sql(create_table_query)
     return True
   
 # We are no longer using the parquet location for the table so we want the query up to the USING keyword and then add um_creation_date and um_processed_timestamp columns  
 def format_create_table_query(create_table_query):
   unclosed_query = create_table_query.split(")  USING")[0]
-  unclosed_query += ", `um_processed_date` DATE, `um_processed_timestamp` TIMESTAMP"
+  unclosed_query += ", `um_processed_date` DATE"
   closed_query = unclosed_query + ")"
+  closed_query += "PARTITIONED BY ('um_processed_date')"
   print(closed_query)
   return closed_query
     
-def replace_table_with_databricks_managed_table(schema, table, current_time):
-  table_df = spark.table(f"{schema}.{table}") 
-  spark.sql(f"CREATE TABLE {schema}.{table}_backup AS SELECT * FROM {schema}.{table}")
-  print(f"Finished creating {schema}.{table}_backup, now overwriting {schema}.{table}")
+def replace_table_with_databricks_managed_table(org_id, entity_table, create_table_query):
+  table_df = spark.table(f"{org_id}.{entity_table}") 
+  spark.sql(f"CREATE TABLE {org_id}.{entity_table}_backup AS SELECT * FROM {org_id}.{entity_table}")
+  print(f"Finished creating {org_id}.{entity_table}_backup")
   #Overwrite original table with processingDate and partitioned by processingDate
-  print(f"Dropping original non-databricks managed table {schema}.{table}")
-  spark.sql(f"DROP TABLE {schema}.{table}")
-  print(f"Recreating databricks managed table from {schema}.{table}_backup")
-  spark.sql(f"CREATE OR REPLACE TABLE {schema}.{table}_test1 PARTITIONED BY (um_processed_date) AS SELECT *, CAST('{current_time}' AS DATE) \
-            AS um_processed_date, '{current_time} AS um_processed_timestamp' FROM {schema}.{table}_backup")  
+  print(f"Dropping original non-databricks managed table {org_id}.{entity_table}")
+  spark.sql(f"DROP TABLE {org_id}.{entity_table}")
+  print(f"Recreating databricks managed table from {org_id}.{entity_table}")
+  spark.sql(f"CREATE OR REPLACE TABLE {org_id}.{entity_table}_test1 PARTITIONED BY (um_processed_date) AS SELECT *, CAST('{current_time}' AS DATE) \
+            AS um_processed_date, '{current_time} AS um_processed_timestamp' FROM {org_id}.{entity_table}_backup")  
 
-def get_max_um_processed_timestamp(org_id, entity_table):
-  return spark.sql(f"""SELECT MAX(um_processed_timestamp) AS processed_timestamp FROM {org_id}.{entity_table}
-      WHERE um_processed_date = '(SELECT MAX(um_processed_date) FROM {org_id}.{entity_table})'""").collect()[0]["processed_timestamp"]
+def get_all_files(org_id, entity_table):
+  file_path_list = []
+  entity_table_id = entity_table.split("_")[-1]
+  org_id = org_id.split("_")[-1]
+  file_info_list = dbutils.fs.ls(f"/mnt/cdp/{org_id}/{entity_table_id}")
+  for file_info in file_info_list:
+    file_path_list += [file_info[0].replace("dbfs:/mnt/cdp/", "s3://usermind-preprod-cdp/")]
+  return file_path_list
 
-def file_newer_than_last_processed(schema_name, table_name, last_processed):
-  entity_id = table_name.split("_")[-1]
-  path = f"{parquet_path}/{schema_name}/{entity_id}"
-  if last_processed is None:
-    last_processed_epoc = 1658102400011
-  else:
-    last_processed_epoc = last_processed.timestamp() * 1000
-  URI = sc._gateway.jvm.java.net.URI
-  Path = sc._gateway.jvm.org.apache.hadoop.fs.Path
-  FileSystem = sc._gateway.jvm.org.apache.hadoop.fs.FileSystem
-  conf = sc._jsc.hadoopConfiguration()
-  pathObject = Path(path)
-  fs = pathObject.getFileSystem(sc._jsc.hadoopConfiguration())
-  try:
-    inodes = fs.listStatus(pathObject)
-    time = inodes[0].getModificationTime()
-    file = inodes[0].getPath().toString()
-    files = []
-    for i in range(0, len(inodes)):
-      if (inodes[i].getModificationTime() > last_processed_epoc):
-        time = inodes[i].getModificationTime()
-        files += [inodes[i].getPath().toString()]
-    return files
-  except Py4JJavaError as ex:
-    print(f"Unable to process {schema_name}.{table_name}")
-    return []
-
-def read_newer_files(newer_file_list):
-  if len(newer_file_list) > 0:
-    return spark.read.parquet(*newer_file_list)
+def read_files(file_list):
+  if len(file_list) > 0:
+    print(file_list)
+    return spark.read.parquet(*file_list)
   print("Newer file list was empty, returning None")
   return None
 
+def load_data(org_id, table_name, file_list):
+  existing_data_df = read_files(file_list)
+  existing_data_df = existing_data_df.withColumn("um_processed_date", F.to_date(F.col("um_creation_date_utc"),"MM-dd-yyyy"))
+  existing_data_df.show()
+  #append_data_to_table(existing_data_df, org_id, entity_table)
 
-def append_newer_file_dataframe(newer_data, org_id, entity_table):
+def append_data_to_table(newer_data, org_id, entity_table):
   if newer_data:
     newer_data.write.mode("append").saveAsTable(f"org_{org_id}.{entity_table}_test1")
   else:
     print("Dataframe passed to append_newer_file_dataframe with {org_id}.{entity_table} was None, not appending data")
 
+def delete_files(file_list):
+  for file in file_list:
+    print(f"Removing file {file}")
+    #dbutils.fs.rm(file)
 
 # COMMAND ----------
 
@@ -196,15 +178,43 @@ if data_count > 0:
   for table_row in pending_refreshes:
     print(table_row)
     table_dict = table_row.asDict()
-    schema_name = table_dict["schema_name"]
-    table_name = table_dict["table_name"]
-    if not is_table_databricks_managed(schema_name, table_name, format_create_table_query(table_dict["create_table_query"])):
-      replace_table_with_databricks_managed_table(schema_name, table_name)
-    latest_processed_time = get_max_um_processed_timestamp(schema_name, table_name)
-    print(f"Latest processed time for {schema_name}.{table_name} is {latest_processed_time}")
-    new_files = file_newer_than_last_processed(schema_name, table_name, latest_processed_time)
-    print(f"Found the following files to append to {schema_name}.{table_name}: {new_files}")
-    append_newer_file_dataframe(read_newer_files(new_files), schema_name, table_name)
+    org_id = table_dict["schema_name"]
+    entity_table = table_dict["table_name"]
+    file_list = get_all_files(org_id, entity_table)
+    create_table_query = format_create_table_query(table_dict["create_table_query"])
+    if not is_table_databricks_managed(org_id, table_name, create_table_query):
+      replace_table_with_databricks_managed_table(org_id, entity_table, create_table_query)
+    else:
+      fix_spark_sql_missing_columns(org_id, entity_table)
+      print(f"Found the following files to append to {org_id}.{table_name}: {new_files}")
+    load_data(org_id, entity_table, file_list)
+    delete_files(file_list)
+
+# COMMAND ----------
+
+dbutils.fs.ls("/")
+
+# COMMAND ----------
+
+aws_bucket_name = "usermind-preprod-cdp"
+mount_name = "cdp"
+
+#dbutils.fs.mount("s3a://%s" % aws_bucket_name, "/mnt/%s" % mount_name)
+dbutils.fs.ls("/mnt/cdp")
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC CREATE TABLE eda_test.new_test LIKE eda_test.big_out_0
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC CREATE TABLE IF NOT EXISTS org_10000.csv_importer_data_types_11254 ( `Id` STRING,`date` TIMESTAMP,`email` STRING,`first_name` STRING,`gender` BOOLEAN,`last_name` STRING,`number` DOUBLE,`um_creation_date_utc` TIMESTAMP,`um_object_id` STRING,`um_wave_id` BIGINT , `um_processed_date` DATE) PARTITIONED BY (um_processed_date)
 
 # COMMAND ----------
 
