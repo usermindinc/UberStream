@@ -26,6 +26,9 @@ jdbc_hostname = dbutils.secrets.get(scope = "aurora-host", key = "aurora-host-na
 jdbc_database = 'insights'
 jdbc_port = '5432'
 
+current_env = dbutils.secrets.get(scope = "databricks-workspaces", key = "current-environment")
+
+
 input_path = dbutils.widgets.get('parquet_path')
 parquet_path = input_path[0:-1] if input_path.endswith('/') else input_path
 
@@ -60,6 +63,12 @@ def select_from_update_table():
 
 get_time = lambda: int(round(time.time() * 1000))
 
+def get_cdp_parquet_bucket():
+  if current_env == "preprod":
+    return "s3://usermind-preprod-cdp"
+  if current_env == "staging":
+    return "s3://acid-cdp-staging"
+  
 def get_newest_file(org_id, entity_table):
   file_path_list = []
   file_info_list = dbutils.fs.ls(f"/mnt/cdp/{org_id}/{entity_table}")
@@ -118,32 +127,39 @@ def replace_table_with_databricks_managed_table(org_id, entity_table, create_tab
   print(f"Finished creating {org_id}.{entity_table}_backup")
   #Overwrite original table with processingDate and partitioned by processingDate
   print(f"Dropping original non-databricks managed table {org_id}.{entity_table}")
-  spark.sql(f"DROP TABLE {org_id}.{entity_table}")
+  #spark.sql(f"DROP TABLE {org_id}.{entity_table}")
   print(f"Recreating databricks managed table from {org_id}.{entity_table}")
   spark.sql(f"CREATE OR REPLACE TABLE {org_id}.{entity_table}_test1 PARTITIONED BY (um_processed_date) AS SELECT *, CAST('{current_time}' AS DATE) \
             AS um_processed_date, '{current_time} AS um_processed_timestamp' FROM {org_id}.{entity_table}_backup")  
 
 def get_all_files(org_id, entity_table):
+  print(f"Retrieving all files for {org_id}.{entity_table}")
   file_path_list = []
   entity_table_id = entity_table.split("_")[-1]
   org_id = org_id.split("_")[-1]
-  file_info_list = dbutils.fs.ls(f"/mnt/cdp/{org_id}/{entity_table_id}")
+  file_info_list = dbutils.fs.ls(f"{get_cdp_parquet_bucket()}/{org_id}/{entity_table_id}")
   for file_info in file_info_list:
     file_path_list += [file_info[0].replace("dbfs:/mnt/cdp/", "s3://usermind-preprod-cdp/")]
+  print(f"Retrieved files for {org_id}.{entity_table}: {file_path_list}")
   return file_path_list
 
 def read_files(file_list):
   if len(file_list) > 0:
-    print(file_list)
     return spark.read.parquet(*file_list)
   print("Newer file list was empty, returning None")
   return None
 
 def load_data(org_id, table_name, file_list):
   existing_data_df = read_files(file_list)
+  if existing_data_df is None:
+    print("No files to read, skipping to next entityTable")
+    return
+  print("Successfully read all data")
   existing_data_df = existing_data_df.withColumn("um_processed_date", F.to_date(F.col("um_creation_date_utc"),"MM-dd-yyyy"))
+  print("Successfully added um_processed_date column")
   existing_data_df.show()
-  #append_data_to_table(existing_data_df, org_id, entity_table)
+  append_data_to_table(existing_data_df, org_id, entity_table)
+  print(f"Successfully appended data to {org_id}.{entity_table}")
 
 def append_data_to_table(newer_data, org_id, entity_table):
   if newer_data:
@@ -188,33 +204,30 @@ if data_count > 0:
       fix_spark_sql_missing_columns(org_id, entity_table)
       print(f"Found the following files to append to {org_id}.{table_name}: {new_files}")
     load_data(org_id, entity_table, file_list)
-    delete_files(file_list)
+    raise Ex()
+    #delete_files(file_list)
 
 # COMMAND ----------
 
-dbutils.fs.ls("/")
-
-# COMMAND ----------
-
-aws_bucket_name = "usermind-preprod-cdp"
-mount_name = "cdp"
-
-#dbutils.fs.mount("s3a://%s" % aws_bucket_name, "/mnt/%s" % mount_name)
-dbutils.fs.ls("/mnt/cdp")
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC CREATE TABLE eda_test.new_test LIKE eda_test.big_out_0
+get_all_files("ORG_4948128", "csv_importer_autotestmock1_1055191")
 
 # COMMAND ----------
 
 
 
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC CREATE TABLE IF NOT EXISTS org_10000.csv_importer_data_types_11254 ( `Id` STRING,`date` TIMESTAMP,`email` STRING,`first_name` STRING,`gender` BOOLEAN,`last_name` STRING,`number` DOUBLE,`um_creation_date_utc` TIMESTAMP,`um_object_id` STRING,`um_wave_id` BIGINT , `um_processed_date` DATE) PARTITIONED BY (um_processed_date)
+org_id = "org_4788512"	
+entity_table = "slack_user_1054219"
+file_list = get_all_files(org_id, entity_table)
+create_table_query = format_create_table_query(table_dict["create_table_query"])
+print(create_table_query)
+'''if not is_table_databricks_managed(org_id, table_name, create_table_query):
+  replace_table_with_databricks_managed_table(org_id, entity_table, create_table_query)
+else:
+  fix_spark_sql_missing_columns(org_id, entity_table)
+  print(f"Found the following files to append to {org_id}.{table_name}: {new_files}")
+  load_data(org_id, entity_table, file_list)
+  delete_files(file_list)
+  '''
 
 # COMMAND ----------
 
