@@ -63,44 +63,45 @@ def select_from_update_table():
 
 get_time = lambda: int(round(time.time() * 1000))
 
+
 def get_cdp_parquet_bucket():
-  if current_env == "preprod":
-    return "s3://usermind-preprod-cdp"
-  if current_env == "staging":
-    return "s3://acid-cdp-staging"
-  
+  if current_env == "pre-prod":
+    return "s3a://usermind-preprod-cdp"
+  elif current_env == "staging":
+    return "s3a://acid-cdp-staging"
+
+# Iterates through all parquet files to find the most recent
 def get_newest_file(org_id, entity_table):
   file_path_list = []
-  file_info_list = dbutils.fs.ls(f"/mnt/cdp/{org_id}/{entity_table}")
+  org_id = org_id.split("_")[-1]
+  entity_table_id = entity_table.split("_")[-1]
+  file_info_list = dbutils.fs.ls(f"{get_cdp_parquet_bucket()}/{org_id}/{entity_table_id}")
   most_recent_time = 1658188800011 #Epoc start
   most_recent_file = ""
   for file_info in file_info_list:
-    if file_info[2] > most_recent_time:
+    if file_info[3] > most_recent_time:
       most_recent_file = file_info[0]
-      most_recent_time = file_info[2]
-  return most_recent_file.replace("dbfs:/mnt/cdp/", "s3://usermind-preprod-cdp/")
+      most_recent_time = file_info[3]
+  print(f"Most recent file found is: {most_recent_file}")
+  return most_recent_file
 
+# Finds diff between current entity table columns, columns in latest entity table parquet file, and adds columns to entity table if new columns are found
 def fix_spark_sql_missing_columns(org_id, entity_table):
-  entity_id = entity_table.split('_')[-1]
-  path = '%s/%s/%s' % (parquet_path, org_id, entity_id)
-  table_name = 'org_%s.%s' % (org_id, entity_table)
-  stable = spark.table(table_name)
-  try:
-    ptable = spark.read.parquet(get_newest_file(org_id, entity_id))
-    map_new = { field.name : field for field in ptable.schema }
-    map_old = { field.name : field for field in stable.schema }
-    new_fields = { k : map_new[k] for k in set(map_new) - set(map_old) }
+  col_name_type_dict = {col[0]:col[1] for col in spark.sql(f"DESCRIBE TABLE {org_id}.{entity_table}").collect()}
+  newest_file = get_newest_file(org_id, entity_table)
+  print(f"Using newest file {newest_file} to detect schema additions for {org_id}.{entity_table}")
+  ptable = spark.read.parquet(newest_file)
+  col_name_type_dict_new = { field.name : field for field in ptable.schema }
+  new_fields_types_dict = { col_name: col_name_type_dict_new[col_name] for col_name in set(col_name_type_dict_new) - set(col_name_type_dict)}
+  if len(new_fields_types_dict) > 0:
+    column_definitions = ', '.join([f'{field.name} {field.dataType.simpleString()}' for field in new_fields_types_dict.values()])
+    sql = f'ALTER TABLE {org_id}.{entity_table} ADD COLUMNS {column_definitions}'
+    print(f"SQL used to add columns to table {org_id}.{entity_table}: \n {sql}")
+    spark.sql(sql)
+  else:
+    print(f'table {org_id}.{entity_table} is up to date')
 
-    if (len(new_fields) > 0):
-      column_definitions = ', '.join(['%s %s' % (field.name, field.dataType.simpleString()) for field in new_fields.values()])
-      sql = 'ALTER TABLE %s ADD COLUMNS (%s)' % (table_name, column_definitions)
-      print(sql)
-      spark.sql(sql)
-    else:
-      print('table org_%s.%s is up to date' % (org_id, entity_name))
-  except:
-    print('table org_%s.%s does not have a parquet file' % (org_id, entity_name))
-
+# Checks if data type of table is MANAGED 
 def is_table_databricks_managed(org_id, entity_table, create_table_query):
   try:
     if spark.sql(f"DESCRIBE TABLE EXTENDED {org_id}.{entity_table}").where("col_name = 'Type' AND data_type = 'MANAGED'").count() > 0:
@@ -109,7 +110,9 @@ def is_table_databricks_managed(org_id, entity_table, create_table_query):
     print(f"Table {org_id}.{entity_table} is NOT databricks managed")
   except AnalysisException as Ex:
     print(f"Table {org_id}.{entity_table} not found, creating table now")
+    spark.sql(f"CREATE DATABASE IF NOT EXISTS {org_id}")
     spark.sql(create_table_query)
+    print(f"Successfully created table {org_id}.{entity_table}")
     return True
   
 # We are no longer using the parquet location for the table so we want the query up to the USING keyword and then add um_creation_date and um_processed_timestamp columns  
@@ -117,21 +120,21 @@ def format_create_table_query(create_table_query):
   unclosed_query = create_table_query.split(")  USING")[0]
   unclosed_query += ", `um_processed_date` DATE"
   closed_query = unclosed_query + ")"
-  closed_query += "PARTITIONED BY ('um_processed_date')"
-  print(closed_query)
+  closed_query += "PARTITIONED BY (um_processed_date)"
   return closed_query
-    
+
+# Creates backup of existing table, drops table, and then creates a new table partitioned by um_processed_date
 def replace_table_with_databricks_managed_table(org_id, entity_table, create_table_query):
-  table_df = spark.table(f"{org_id}.{entity_table}") 
+  print(f"Starting replacement process for {org_id}.{entity_table}")
   spark.sql(f"CREATE TABLE {org_id}.{entity_table}_backup AS SELECT * FROM {org_id}.{entity_table}")
   print(f"Finished creating {org_id}.{entity_table}_backup")
   #Overwrite original table with processingDate and partitioned by processingDate
   print(f"Dropping original non-databricks managed table {org_id}.{entity_table}")
   #spark.sql(f"DROP TABLE {org_id}.{entity_table}")
   print(f"Recreating databricks managed table from {org_id}.{entity_table}")
-  spark.sql(f"CREATE OR REPLACE TABLE {org_id}.{entity_table}_test1 PARTITIONED BY (um_processed_date) AS SELECT *, CAST('{current_time}' AS DATE) \
-            AS um_processed_date, '{current_time} AS um_processed_timestamp' FROM {org_id}.{entity_table}_backup")  
+  spark.sql(f"{create_table_query}")  
 
+#Gets all parquet files for a given org_id.entity_table
 def get_all_files(org_id, entity_table):
   print(f"Retrieving all files for {org_id}.{entity_table}")
   file_path_list = []
@@ -149,7 +152,8 @@ def read_files(file_list):
   print("Newer file list was empty, returning None")
   return None
 
-def load_data(org_id, table_name, file_list):
+# Reads in all data from file_list and adds um_processed_date before appending the data to the org_id.entity_table
+def load_data(org_id, entity_table, file_list):
   existing_data_df = read_files(file_list)
   if existing_data_df is None:
     print("No files to read, skipping to next entityTable")
@@ -163,14 +167,14 @@ def load_data(org_id, table_name, file_list):
 
 def append_data_to_table(newer_data, org_id, entity_table):
   if newer_data:
-    newer_data.write.mode("append").saveAsTable(f"org_{org_id}.{entity_table}_test1")
+    newer_data.write.mode("append").saveAsTable(f"{org_id}.{entity_table}")
   else:
     print("Dataframe passed to append_newer_file_dataframe with {org_id}.{entity_table} was None, not appending data")
 
 def delete_files(file_list):
   for file in file_list:
     print(f"Removing file {file}")
-    #dbutils.fs.rm(file)
+    dbutils.fs.rm(file)
 
 # COMMAND ----------
 
@@ -192,42 +196,24 @@ if data_count > 0:
   data.show()
   pending_refreshes = data.rdd.collect()
   for table_row in pending_refreshes:
-    print(table_row)
-    table_dict = table_row.asDict()
-    org_id = table_dict["schema_name"]
-    entity_table = table_dict["table_name"]
-    file_list = get_all_files(org_id, entity_table)
-    create_table_query = format_create_table_query(table_dict["create_table_query"])
-    if not is_table_databricks_managed(org_id, table_name, create_table_query):
-      replace_table_with_databricks_managed_table(org_id, entity_table, create_table_query)
-    else:
-      fix_spark_sql_missing_columns(org_id, entity_table)
-      print(f"Found the following files to append to {org_id}.{table_name}: {new_files}")
-    load_data(org_id, entity_table, file_list)
-    raise Ex()
-    #delete_files(file_list)
-
-# COMMAND ----------
-
-get_all_files("ORG_4948128", "csv_importer_autotestmock1_1055191")
-
-# COMMAND ----------
-
-
-
-org_id = "org_4788512"	
-entity_table = "slack_user_1054219"
-file_list = get_all_files(org_id, entity_table)
-create_table_query = format_create_table_query(table_dict["create_table_query"])
-print(create_table_query)
-'''if not is_table_databricks_managed(org_id, table_name, create_table_query):
-  replace_table_with_databricks_managed_table(org_id, entity_table, create_table_query)
-else:
-  fix_spark_sql_missing_columns(org_id, entity_table)
-  print(f"Found the following files to append to {org_id}.{table_name}: {new_files}")
-  load_data(org_id, entity_table, file_list)
-  delete_files(file_list)
-  '''
+    try:
+        print(table_row)
+        table_dict = table_row.asDict()
+        org_id = table_dict["schema_name"]
+        entity_table = table_dict["table_name"]
+        file_list = get_all_files(org_id, entity_table)
+        create_table_query = format_create_table_query(table_dict["create_table_query"])
+        if not is_table_databricks_managed(org_id, entity_table, create_table_query):
+          replace_table_with_databricks_managed_table(org_id, entity_table, create_table_query)
+        else:
+          fix_spark_sql_missing_columns(org_id, entity_table)
+        print(f"Found the following files to append to {org_id}.{entity_table}: {file_list}")
+        load_data(org_id, entity_table, file_list)
+        delete_files(file_list)
+    except Exception as ex:
+        print(f"Unable to process {org_id}.{entity_table} due to exception: {ex}")
+        raise ex
+  delete_from_update_table(max_id)
 
 # COMMAND ----------
 
