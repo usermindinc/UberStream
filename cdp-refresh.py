@@ -63,19 +63,12 @@ def select_from_update_table():
 
 get_time = lambda: int(round(time.time() * 1000))
 
-
-def get_cdp_parquet_bucket():
-  if current_env == "pre-prod":
-    return "s3a://usermind-preprod-cdp"
-  elif current_env == "staging":
-    return "s3a://acid-cdp-staging"
-
 # Iterates through all parquet files to find the most recent
 def get_newest_file(org_id, entity_table):
   file_path_list = []
   org_id = org_id.split("_")[-1]
   entity_table_id = entity_table.split("_")[-1]
-  file_info_list = dbutils.fs.ls(f"{get_cdp_parquet_bucket()}/{org_id}/{entity_table_id}")
+  file_info_list = dbutils.fs.ls(f"{parquet_path}/{org_id}/{entity_table_id}")
   most_recent_time = 1658188800011 #Epoc start
   most_recent_file = ""
   for file_info in file_info_list:
@@ -130,7 +123,7 @@ def replace_table_with_databricks_managed_table(org_id, entity_table, create_tab
   print(f"Finished creating {org_id}.{entity_table}_backup")
   #Overwrite original table with processingDate and partitioned by processingDate
   print(f"Dropping original non-databricks managed table {org_id}.{entity_table}")
-  #spark.sql(f"DROP TABLE {org_id}.{entity_table}")
+  spark.sql(f"DROP TABLE {org_id}.{entity_table}")
   print(f"Recreating databricks managed table from {org_id}.{entity_table}")
   spark.sql(f"{create_table_query}")  
 
@@ -140,7 +133,7 @@ def get_all_files(org_id, entity_table):
   file_path_list = []
   entity_table_id = entity_table.split("_")[-1]
   org_id = org_id.split("_")[-1]
-  file_info_list = dbutils.fs.ls(f"{get_cdp_parquet_bucket()}/{org_id}/{entity_table_id}")
+  file_info_list = dbutils.fs.ls(f"{parquet_path}/{org_id}/{entity_table_id}")
   for file_info in file_info_list:
     file_path_list += [file_info[0].replace("dbfs:/mnt/cdp/", "s3://usermind-preprod-cdp/")]
   print(f"Retrieved files for {org_id}.{entity_table}: {file_path_list}")
@@ -193,7 +186,7 @@ print("Entities to update: " + str(data_count))
 
 if data_count > 0:
   # refresh tables
-  data.show()
+  data.show(20, False)
   pending_refreshes = data.rdd.collect()
   for table_row in pending_refreshes:
     try:
@@ -205,7 +198,7 @@ if data_count > 0:
         create_table_query = format_create_table_query(table_dict["create_table_query"])
         if not is_table_databricks_managed(org_id, entity_table, create_table_query):
           replace_table_with_databricks_managed_table(org_id, entity_table, create_table_query)
-        else:
+        elif len(file_list) > 0:
           fix_spark_sql_missing_columns(org_id, entity_table)
         print(f"Found the following files to append to {org_id}.{entity_table}: {file_list}")
         load_data(org_id, entity_table, file_list)
@@ -214,7 +207,3 @@ if data_count > 0:
         print(f"Unable to process {org_id}.{entity_table} due to exception: {ex}")
         raise ex
   delete_from_update_table(max_id)
-
-# COMMAND ----------
-
-
