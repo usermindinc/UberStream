@@ -28,9 +28,6 @@ jdbc_hostname = dbutils.secrets.get(scope = "aurora-host", key = "aurora-host-na
 jdbc_database = 'insights'
 jdbc_port = '5432'
 
-current_env = dbutils.secrets.get(scope = "databricks-workspaces", key = "current-environment")
-
-
 input_path = dbutils.widgets.get('parquet_path')
 parquet_path = input_path[0:-1] if input_path.endswith('/') else input_path
 
@@ -39,7 +36,7 @@ def delete_from_update_table(id):
   try:
     conn = psycopg2.connect(host=jdbc_hostname,database=jdbc_database, user=thylacine_aurora_username, password=thylacine_aurora_password)
     cur = conn.cursor()
-    delete_sql = "DELETE FROM umcnc.table_updates_parquet WHERE id = " + str(id)
+    delete_sql = f"DELETE FROM umcnc.table_updates_parquet WHERE id = '{str(id)}'"
     print(delete_sql)
     cur.execute(delete_sql)
     cur.close()
@@ -106,7 +103,6 @@ def fix_spark_sql_missing_columns(org_id, entity_table):
 # Select all rows to refresh
 data = select_from_update_table()
 
-# Store max id so that we can delete records after refresh
 # get data count for timings
 data_count = data.count();
 print("Entities to update: " + str(data_count))
@@ -115,7 +111,6 @@ if data_count > 0:
   # refresh tables
   pending_refreshes = data.rdd.collect()
   print(pending_refreshes)
-  raise Ex()
   for table_row in pending_refreshes:
     try:
         print(table_row)
@@ -129,8 +124,8 @@ if data_count > 0:
           fix_spark_sql_missing_columns(org_id, entity_table)
           print(f"Found the following files to append to {org_id}.{entity_table}: {file_list}")
           load_data(org_id, entity_table, file_list)
-        #delete_files(file_list)
-        #delete_from_update_table(table_dict["id"])
+        delete_files(file_list)
+        delete_from_update_table(table_dict["id"])
     except Exception as ex:
         print(f"Unable to process {org_id}.{entity_table} due to exception: {ex}")
         raise ex

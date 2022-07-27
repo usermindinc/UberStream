@@ -28,16 +28,15 @@ entity_table = ""
 # Iterates through all schemas that start with org_
 for row in spark.sql("SHOW SCHEMAS LIKE 'org_*'").collect():
     # Shows tables in the schema not starting with usermind that ends in at least 3 numbers
-    print(row)
     for database_row in spark.sql(f"SHOW TABLES FROM {row[0]} LIKE '^((?!usermind).)*([0-9]){{3,20}}$'").collect():
         try:
           org_id, entity_table = database_row[0], database_row[1]
+          print(f"Processing {org_id}.{entity_table}")
           if is_table_databricks_managed(org_id, entity_table):
             print("Table {org_id}.{entity_table} is already databricks managed. Skipping processing.")
             continue
           print(f"Processing org {org_id} and table {entity_table}")
           replace_table_with_databricks_managed_table(org_id, entity_table, file_list)
-          raise ex()
           delete_files(file_list)
         except Exception as ex:
           print(f"Encountered exception while processing {org_id}.{enttity_table}: {ex}", org_id, entity_table, ex)
