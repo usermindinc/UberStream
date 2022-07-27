@@ -7,14 +7,6 @@ from pyspark.sql import functions as F
 
 # COMMAND ----------
 
-dbutils.widgets.text('parquet_path', 's3://acid-cdp-staging', 'Base location of parquet files')
-
-input_path = dbutils.widgets.get('parquet_path')""
-parquet_path = input_path[0:-1] if input_path.endswith('/') else input_path
-
-
-# COMMAND ----------
-
 # MAGIC %sql
 # MAGIC CREATE DATABASE IF NOT EXISTS usermind_reporting 
 
@@ -48,24 +40,6 @@ for row in spark.sql("SHOW SCHEMAS LIKE 'org_*'").collect():
           raise ex()
           delete_files(file_list)
         except Exception as ex:
-          print("something", org_id, entity_table, ex)
-          raise ex
-          write_failure(org_id, entity_table, "fake ex")
+          print(f"Encountered exception while processing {org_id}.{enttity_table}: {ex}", org_id, entity_table, ex)
+          write_failure(org_id, entity_table, str(ex))
           
-
-# COMMAND ----------
-
-spark.sql("SHOW TABLES FROM org_1089824 LIKE '^((?!usermind).)*([0-9])+$'").show()
-
-# COMMAND ----------
-
-rename_dbtemp_table("org_1012768", "csv_importer_test1_1045748")
-
-# COMMAND ----------
-
-dbutils.fs.ls("/mnt/")
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC ALTER TABLE 

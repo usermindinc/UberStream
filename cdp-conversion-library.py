@@ -1,4 +1,8 @@
 # Databricks notebook source
+dbutils.widgets.text('parquet_path', 's3://acid-cdp-staging', 'Base location of parquet files')
+
+input_path = dbutils.widgets.get('parquet_path')
+PARQUET_PATH = input_path[0:-1] if input_path.endswith('/') else input_path
 
 
 # COMMAND ----------
@@ -9,6 +13,7 @@ def is_table_databricks_managed(org_id, entity_table):
       print(f"Table {org_id}.{entity_table} is databricks managed")
       return True
     print(f"Table {org_id}.{entity_table} is NOT databricks managed")
+    return False
   except AnalysisException as Ex:
     print(f"Table {org_id}.{entity_table} not found, creating table now")
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {org_id}")
@@ -35,7 +40,7 @@ def get_all_files(org_id, entity_table):
   org_id = org_id.split("_")[-1]
   file_info_list = dbutils.fs.ls(f"{parquet_path}/{org_id}/{entity_table_id}")
   for file_info in file_info_list:
-    file_path_list += [file_info[0].replace("dbfs:/mnt/cdp/", "s3://usermind-preprod-cdp/")]
+    file_path_list += [file_info[0]]
   print(f"Retrieved files for {org_id}.{entity_table}: {file_path_list}")
   return file_path_list
 
@@ -76,7 +81,3 @@ def delete_files(file_list):
   for file in file_list:
     print(f"Removing file {file}")
     dbutils.fs.rm(file)
-
-# COMMAND ----------
-
-

@@ -1,8 +1,6 @@
 # Databricks notebook source
 sqlContext.sql('set spark.sql.caseSensitive=true')
 
-dbutils.widgets.text('parquet_path', 's3://acid-cdp-staging', 'Base location of parquet files')
-
 # COMMAND ----------
 
 from pyspark.sql import functions as F
