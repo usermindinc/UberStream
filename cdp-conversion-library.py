@@ -16,14 +16,6 @@ def is_table_databricks_managed(org_id, entity_table):
     file_list = get_all_files(org_id, entity_table)
     load_data(org_id, entity_table, file_list)
     return True
-  
-# We are no longer using the parquet location for the table so we want the query up to the USING keyword and then add um_creation_date and um_processed_timestamp columns  
-def format_create_table_query(create_table_query):
-  unclosed_query = create_table_query.split(")  USING")[0]
-  unclosed_query += ", `um_processed_date` DATE"
-  closed_query = unclosed_query + ")"
-  closed_query += "PARTITIONED BY (um_processed_date)"
-  return closed_query
 
 # Creates backup of existing table, loads all existing data into table with suffix _dbtemp, drops existing table, and then renames db_temp table to replace table
 def replace_table_with_databricks_managed_table(org_id, entity_table):

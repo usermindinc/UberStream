@@ -73,7 +73,7 @@ def get_newest_file(org_id, entity_table):
   org_id = org_id.split("_")[-1]
   entity_table_id = entity_table.split("_")[-1]
   file_info_list = dbutils.fs.ls(f"{parquet_path}/{org_id}/{entity_table_id}")
-  most_recent_time = 1658188800011 #Epoc start
+  most_recent_time = 0 #Epoc start
   most_recent_file = ""
   for file_info in file_info_list:
     if file_info[3] > most_recent_time:
