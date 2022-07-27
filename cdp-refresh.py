@@ -1,8 +1,6 @@
 # Databricks notebook source
 sqlContext.sql('set spark.sql.caseSensitive=true')
 
-dbutils.widgets.text('parquet_path', 's3://acid-cdp-staging', 'Base location of parquet files')
-
 # COMMAND ----------
 
 from pyspark.sql import functions as F
@@ -10,10 +8,19 @@ from pyspark.sql import DataFrame
 from pyspark.rdd import RDD
 import time
 import psycopg2
+import datetime
+from datetime import timedelta
+from pyspark.sql.functions import expr
+from pyspark.sql.utils import AnalysisException
+from py4j.protocol import Py4JJavaError
 
 # COMMAND ----------
 
-umcnc.table_updates_parquet#All postgres access functions here.
+# MAGIC %run /Repos/CDP/UberStream/cdp-conversion-library
+
+# COMMAND ----------
+
+#All postgres access functions here.
 
 thylacine_aurora_username = dbutils.secrets.get(scope = "thylacine-aurora", key = "username")
 thylacine_aurora_password = dbutils.secrets.get(scope = "thylacine-aurora", key = "password")
@@ -24,12 +31,12 @@ jdbc_port = '5432'
 input_path = dbutils.widgets.get('parquet_path')
 parquet_path = input_path[0:-1] if input_path.endswith('/') else input_path
 
-def delete_from_update_table(max_id):
+def delete_from_update_table(id):
   conn = None
   try:
     conn = psycopg2.connect(host=jdbc_hostname,database=jdbc_database, user=thylacine_aurora_username, password=thylacine_aurora_password)
     cur = conn.cursor()
-    delete_sql = "DELETE FROM umcnc.table_updates_parquet WHERE id <= " + str(max_id)
+    delete_sql = f"DELETE FROM umcnc.table_updates_parquet WHERE id = '{str(id)}'"
     print(delete_sql)
     cur.execute(delete_sql)
     cur.close()
@@ -55,61 +62,39 @@ def select_from_update_table():
 
 get_time = lambda: int(round(time.time() * 1000))
 
-def get_newest_file(path):
-  URI = sc._gateway.jvm.java.net.URI
-  Path = sc._gateway.jvm.org.apache.hadoop.fs.Path
-  FileSystem = sc._gateway.jvm.org.apache.hadoop.fs.FileSystem
-  conf = sc._jsc.hadoopConfiguration()
-  pathObject = Path(path)
-  fs = pathObject.getFileSystem(sc._jsc.hadoopConfiguration())
+# Iterates through all parquet files to find the most recent
+def get_newest_file(org_id, entity_table):
+  file_path_list = []
+  org_id = org_id.split("_")[-1]
+  entity_table_id = entity_table.split("_")[-1]
+  file_info_list = dbutils.fs.ls(f"{parquet_path}/{org_id}/{entity_table_id}")
+  most_recent_time = 0 #Epoc start
+  most_recent_file = ""
+  for file_info in file_info_list:
+    if file_info[3] > most_recent_time:
+      most_recent_file = file_info[0]
+      most_recent_time = file_info[3]
+  print(f"Most recent file found is: {most_recent_file}")
+  return most_recent_file
 
-  inodes = fs.listStatus(pathObject)
-  time = inodes[0].getModificationTime()
-  file = inodes[0].getPath().toString()
+# Finds diff between current entity table columns, columns in latest entity table parquet file, and adds columns to entity table if new columns are found
+def fix_spark_sql_missing_columns(org_id, entity_table):
+  col_name_type_dict = {col[0]:col[1] for col in spark.sql(f"DESCRIBE TABLE {org_id}.{entity_table}").collect()}
+  newest_file = get_newest_file(org_id, entity_table)
+  print(f"Using newest file {newest_file} to detect schema additions for {org_id}.{entity_table}")
+  ptable = spark.read.parquet(newest_file)
+  col_name_type_dict_new = { field.name : field for field in ptable.schema }
+  new_fields_types_dict = { col_name: col_name_type_dict_new[col_name] for col_name in set(col_name_type_dict_new) - set(col_name_type_dict)}
+  if len(new_fields_types_dict) > 0:
+    column_definitions = ', '.join([f'{field.name} {field.dataType.simpleString()}' for field in new_fields_types_dict.values()])
+    sql = f'ALTER TABLE {org_id}.{entity_table} ADD COLUMNS {column_definitions}'
+    print(f"SQL used to add columns to table {org_id}.{entity_table}: \n {sql}")
+    spark.sql(sql)
+  else:
+    print(f'table {org_id}.{entity_table} is up to date')
 
-  for i in range(1, len(inodes)):
-    if (inodes[i].getModificationTime() > time):
-      time = inodes[i].getModificationTime()
-      file = inodes[i].getPath().toString()
-  return file
+# Checks if data type of table is MANAGED 
 
-def fix_spark_sql_missing_columns(org_id, entity_name):
-  entity_id = entity_name.split('_')[-1]
-  path = '%s/%s/%s' % (parquet_path, org_id, entity_id)
-  table_name = 'org_%s.%s' % (org_id, entity_name)
-  stable = spark.table(table_name)
-  try:
-    ptable = spark.read.parquet(get_newest_file(path))
-    map_new = { field.name : field for field in ptable.schema }
-    map_old = { field.name : field for field in stable.schema }
-    new_fields = { k : map_new[k] for k in set(map_new) - set(map_old) }
-
-    if (len(new_fields) > 0):
-      column_definitions = ', '.join(['%s %s' % (field.name, field.dataType.simpleString()) for field in new_fields.values()])
-      sql = 'ALTER TABLE %s ADD COLUMNS (%s)' % (table_name, column_definitions)
-      print(sql)
-      spark.sql(sql)
-    else:
-      print('table org_%s.%s is up to date' % (org_id, entity_name))
-  except:
-    print('table org_%s.%s does not have a parquet file' % (org_id, entity_name))
-
-def refresh_data(row): 
-  schema_name = row.schema_name
-  org_id = schema_name[4:]
-  table_name = row.table_name
-  try:
-    start_time = get_time()
-    fix_spark_sql_missing_columns(org_id, table_name)
-    sqlContext.sql("REFRESH TABLE `" + schema_name + "`.`" + table_name + "`")
-    return (get_time() - start_time)
-  except Exception as ex: 
-    print(ex)
-    start_time = get_time()
-    sqlContext.sql("CREATE DATABASE IF NOT EXISTS `" + schema_name + "`")
-    print(row.create_table_query)
-    sqlContext.sql(row.create_table_query)
-    return (get_time() - start_time)
 
 # COMMAND ----------
 
@@ -118,21 +103,34 @@ def refresh_data(row):
 # Select all rows to refresh
 data = select_from_update_table()
 
-# Store max id so that we can delete records after refresh
-max_id = data.agg({"id": "max"}).collect()[0]["max(id)"]
-print("Max id: " + str(max_id))
-
 # get data count for timings
 data_count = data.count();
 print("Entities to update: " + str(data_count))
 
 if data_count > 0:
   # refresh tables
-  data.show()
   pending_refreshes = data.rdd.collect()
-  refresh_results = list(map(refresh_data, pending_refreshes))
-  print(refresh_results)
-  print("average refresh time: " + str(sum(refresh_results) / data_count))
+  print(pending_refreshes)
+  for table_row in pending_refreshes:
+    try:
+        print(table_row)
+        table_dict = table_row.asDict()
+        org_id = table_dict["schema_name"]
+        entity_table = table_dict["table_name"]
+        file_list = get_all_files(org_id, entity_table)
+        if not is_table_databricks_managed(org_id, entity_table, create_table_query):
+          replace_table_with_databricks_managed_table(org_id, entity_table)
+        elif len(file_list) > 0:
+          fix_spark_sql_missing_columns(org_id, entity_table)
+          print(f"Found the following files to append to {org_id}.{entity_table}: {file_list}")
+          load_data(org_id, entity_table, file_list)
+        delete_files(file_list)
+        delete_from_update_table(table_dict["id"])
+    except Exception as ex:
+        print(f"Unable to process {org_id}.{entity_table} due to exception: {ex}")
+        raise ex
+  
 
-  # delete all refreshed tables
-  delete_from_update_table(max_id)
+# COMMAND ----------
+
+
