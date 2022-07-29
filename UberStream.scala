@@ -40,7 +40,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.streaming._
 
 val inputPath = dbutils.widgets.get("Delta Path")
-val DELTA_PATH = "s3://usermind-preprod-cdp/delta" //if(inputPath.endsWith("/")) inputPath else (inputPath + "/")
+val DELTA_PATH = if(inputPath.endsWith("/")) inputPath else (inputPath + "/")
 
 val kafkaBootstrapServers = dbutils.widgets.get("kafkaBootstrapServers")
 
