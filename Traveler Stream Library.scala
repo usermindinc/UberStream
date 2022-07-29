@@ -108,10 +108,6 @@ def startTravelerStream(dfStream : DataFrame) : StreamingQuery = {
       //format stream to just contain traveleevent data
       val dfFormatted = formatTravelerStream(df)
       dfFormatted.createOrReplaceTempView("travelerUpdates")
-
-      //log current batch
-      df.sparkSession.sql(s"""DROP TABLE IF EXISTS $logDatabase.travelerUpdates""")
-      df.sparkSession.sql(s"""CREATE TABLE $logDatabase.travelerUpdates AS SELECT * FROM travelerUpdates""")
       
       //branch by org
       df.sparkSession.sql(s"""SELECT DISTINCT orgId FROM travelerUpdates """)
@@ -138,10 +134,6 @@ def startTravelerStream(dfStream : DataFrame) : StreamingQuery = {
                     WHERE orgId = $orgId AND namespace = '$namespace'
                     """)
                   dfUpdates.createOrReplaceTempView("travelerUpdatesByOrgAndNamespace")       
-
-                  //log current sub batch
-                  df.sparkSession.sql(s"""DROP TABLE IF EXISTS $logDatabase.travelerUpdatesByOrgAndNamespace""")
-                  df.sparkSession.sql(s"""CREATE TABLE $logDatabase.travelerUpdatesByOrgAndNamespace AS SELECT * FROM travelerUpdatesByOrgAndNamespace""")
 
                   val mergeSQL = s"""
                         MERGE INTO org_$orgId.usermind_travelerevent T
